@@ -9,7 +9,7 @@ from copy import copy
 from src import utils
 
 class Parser(object):
-    def __init__(self):
+    def __init__(self, args_list=None):
         parser = argparse.ArgumentParser("RobustDARTS")
 
         # general options
@@ -72,13 +72,14 @@ class Parser(object):
         parser.add_argument('--randomnas_rounds',        type=int,            default=None,           help='number of evaluation rounds in RandomNAS')
         parser.add_argument('--n_samples',               type=int,            default=1000,           help='number of discrete architectures to sample during eval')
 
-        self.args = parser.parse_args()
+        self.args = parser.parse_args(args_list)
         utils.print_args(self.args)
 
 
 class Helper(Parser):
-    def __init__(self):
-        super(Helper, self).__init__()
+    def __init__(self, save_dir, args_list=None):
+        super(Helper, self).__init__(args_list)
+        self.args.save = save_dir
 
         self.args._save = copy(self.args.save)
         self.args.save = '{}/{}/{}/{}_{}-{}'.format(self.args.save,
@@ -159,11 +160,11 @@ class Helper(Parser):
         train_queue = torch.utils.data.DataLoader(
             train_data, batch_size=self.args.batch_size,
             sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[:split]),
-            pin_memory=True, num_workers=2)
+            pin_memory=True, num_workers=self.args.num_workers)
 
         valid_queue = torch.utils.data.DataLoader(
             train_data, batch_size=self.args.batch_size,
             sampler=torch.utils.data.sampler.SubsetRandomSampler(indices[split:num_train]),
-            pin_memory=True, num_workers=2)
+            pin_memory=True, num_workers=self.args.num_workers)
 
         return train_queue, valid_queue, train_transform, valid_transform

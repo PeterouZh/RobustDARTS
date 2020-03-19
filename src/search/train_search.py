@@ -1,3 +1,4 @@
+import tqdm
 import os
 import sys
 import glob
@@ -27,21 +28,23 @@ from src.search.architect import Architect
 from src.search.analyze import Analyzer
 from src.search.args import Helper
 
+from template_lib.trainer.base_trainer import summary_dict2txtfig
 
-helper = Helper()
-args = helper.config
 
-log_format = '%(asctime)s %(message)s'
-logging.basicConfig(stream=sys.stdout, level=logging.INFO,
-    format=log_format, datefmt='%m/%d %I:%M:%S %p')
-fh = logging.FileHandler(os.path.join(args.save, 'log_{}.txt'.format(args.task_id)))
-fh.setFormatter(logging.Formatter(log_format))
-logging.getLogger().addHandler(fh)
+# helper = Helper()
+# args = helper.config
+
+# log_format = '%(asctime)s %(message)s'
+# logging.basicConfig(stream=sys.stdout, level=logging.INFO,
+#     format=log_format, datefmt='%m/%d %I:%M:%S %p')
+# fh = logging.FileHandler(os.path.join(args.save, 'log_{}.txt'.format(args.task_id)))
+# fh.setFormatter(logging.Formatter(log_format))
+# logging.getLogger().addHandler(fh)
 
 schedule_of_params = []
 
 
-def main(primitives):
+def main(primitives, args, helper, myargs):
   if not torch.cuda.is_available():
     logging.info('no gpu device available')
     sys.exit(1)
@@ -118,14 +121,14 @@ def main(primitives):
         logging.info('epoch %d lr %e', epoch, lr)
 
       # training
-      train_acc, train_obj = train(epoch, primitives, train_queue,
+      train_acc, train_obj = train(args, epoch, primitives, train_queue,
                                    valid_queue, model, architect, criterion,
                                    optimizer, lr, analyser, la_tracker,
-                                   iteration)
+                                   iteration, myargs=myargs)
       logging.info('train_acc %f', train_acc)
 
       # validation
-      valid_acc, valid_obj = infer(valid_queue, model, criterion)
+      valid_acc, valid_obj = infer(args, valid_queue, model, criterion)
       logging.info('valid_acc %f', valid_acc)
 
       # update the errors dictionary
@@ -330,13 +333,14 @@ def main(primitives):
     pickle.dump(schedule_of_params, file, pickle.HIGHEST_PROTOCOL)
 
 
-def train(epoch, primitives, train_queue, valid_queue, model, architect,
-          criterion, optimizer, lr, analyser, local_avg_tracker, iteration=1):
+def train(args, epoch, primitives, train_queue, valid_queue, model, architect,
+          criterion, optimizer, lr, analyser, local_avg_tracker, iteration=1, myargs=None):
   objs = utils.AvgrageMeter()
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
 
-  for step, (input, target) in enumerate(train_queue):
+  pbar = tqdm.tqdm(train_queue, desc='train', file=myargs.stdout)
+  for step, (input, target) in enumerate(pbar):
     model.train()
     n = input.size(0)
 
@@ -367,7 +371,7 @@ def train(epoch, primitives, train_queue, valid_queue, model, architect,
 
     if step % args.report_freq == 0:
       logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
-      if args.debug:
+      if args.debug or args.dump:
         break
 
   if args.compute_hessian:
@@ -420,6 +424,11 @@ def train(epoch, primitives, train_queue, valid_queue, model, architect,
       logging.info('CURRENT EV: %f', ev)
       local_avg_tracker.update(epoch, ev, model.genotype())
 
+      summary_dict = dict(max_ev=ev)
+      summary_dict2txtfig(dict_data=summary_dict, prefix='hession', step=epoch,
+                          textlogger=myargs.textlogger)
+      myargs.textlogger.logstr(itr=epoch + 1, ev_genotype=model.genotype())
+
       if args.early_stop and epoch != (args.epochs - 1):
         local_avg_tracker.early_stop(epoch, args.factor, args.es_start_epoch,
                                      args.delta)
@@ -427,7 +436,7 @@ def train(epoch, primitives, train_queue, valid_queue, model, architect,
   return top1.avg, objs.avg
 
 
-def infer(valid_queue, model, criterion):
+def infer(args, valid_queue, model, criterion):
   objs = utils.AvgrageMeter()
   top1 = utils.AvgrageMeter()
   top5 = utils.AvgrageMeter()
@@ -454,7 +463,37 @@ def infer(valid_queue, model, criterion):
   return top1.avg, objs.avg
 
 
-if __name__ == '__main__':
+def run(argv_str=None):
+  from template_lib.utils.config import parse_args_and_setup_myargs, config2args
+  from template_lib.utils.modelarts_utils import prepare_dataset
+  run_script = os.path.relpath(__file__, os.getcwd())
+  args1, myargs, _ = parse_args_and_setup_myargs(argv_str, run_script=run_script, start_tb=False)
+  myargs.args = args1
+  myargs.config = getattr(myargs.config, args1.command)
+
+  if hasattr(myargs.config, 'datasets'):
+    prepare_dataset(myargs.config.datasets, cfg=myargs.config)
+
+  helper = Helper(save_dir=os.path.join(myargs.args.outdir, 'robust_darts'), args_list=[])
+  args = helper.config
+  args = config2args(myargs.config.args, args)
+  if args.drop_path_prob == 0:
+    args.cutout = False
+
+  log_format = '%(asctime)s %(message)s'
+  # logging.basicConfig()
+  logging.basicConfig(level=logging.INFO, format=log_format, datefmt='%m/%d %I:%M:%S %p')
+  logging.getLogger().handlers = myargs.logger.handlers
+  # for handler in myargs.logger.handlers:
+  #   logging.getLogger().addHandler(handler)
+
   space = spaces_dict[args.space]
-  main(space)
+  main(space, args=args, helper=helper, myargs=myargs)
+
+if __name__ == '__main__':
+  run()
+
+
+
+
 
